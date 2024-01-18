@@ -1,0 +1,807 @@
+---
+title: "Symptom and syndrome network analysis -- MATER project"
+author: "Vincent P. Martin"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r message=FALSE, warning=FALSE}
+rm(list=ls())
+```
+
+```{r message=FALSE, warning=FALSE}
+#initializing environement and loading packages
+
+library(EGAnet)
+library(readr)
+library(tidyr)
+library(vtable)
+library(dplyr)
+library(qgraph)
+library(bootnet)
+library(NetworkComparisonTest)
+library(ggplot2)
+library(forcats)
+library(GGally)
+library(corrplot)
+```
+
+# Global variables
+
+```{r message=FALSE, warning=FALSE}
+# Global variables
+THRESHOLD_UVA = 0.25
+N_BOOT_EGA = 1000
+CORR_EGA = "spearman"
+CORR_qgraph = CORR_EGA
+LAMBDA_MIN_RATIO = 0.1
+GAMMA = 0.5
+GAMMAHL = 0.5
+N_BOOTS_CENTRALITY = 1000
+N_BOOTS_NCT = 1000
+N_BOOTS_CENTRALITY_HL = 1000
+N_BOOTS_NCT_high_level = 1000
+
+PAJUST = "BH" # holm, BH, bonferroni
+NCORE = 4
+set.seed(42)
+
+FORCE_BOOT = FALSE
+
+folder_results="./figures/"
+folder_boot_res = "./boot_data/"
+```
+
+```{r message=FALSE, warning=FALSE}
+# loading data and keeping only cancer
+data_complete <- read_delim("../../colive_data_recoded.csv")
+print(dim(data_complete))
+
+
+# keeping only breast cancer 
+data <- data_complete[data_complete["cancer"] == "yes",]
+data <- data[data["ca-loc-1"] == "breast",]
+data <- data[data["gender"] == "female",]
+```
+
+# Selecting dimensions
+
+```{r list of dimension we work with}
+list_questionnaires = c(
+  'bowPb',
+  'H/A',
+  'pain',
+  'stress',
+  'fss_1',  'fss_2',  'fss_3',  'fss_4',  'fss_5',  'fss_6',  'fss_7',  'fss_8',
+  'fss_9',  
+  'who5_1',  'who5_2',  'who5_3',  'who5_4', 'who5_5',
+  'vq11_1', 'vq11_2', 'vq11_3', 'vq11_4', 'vq11_5', 'vq11_6', 'vq11_7', 'vq11_8', 'vq11_9', 'vq11_10', 'vq11_11',
+  'phq9_1', 'phq9_2', 'phq9_3', 'phq9_4', 'phq9_5','phq9_6','phq9_7','phq9_8',
+  'phq9_9'
+)
+
+# covariates data
+covariates = c('age','BMI','Edu.L','A.days','A.glass', 'A.heavy','Cig.')
+
+# stratification variables
+stratif = c('ageCancer','durationCancer','cancerTreatment','diagDepression', 'cancer_tt_surgery','cancer_tt_chemo','cancer_tt_radio','cancer_tt_immuno', 'cancer_tt_hormono','cancer_tt_other')
+```
+
+```{r dataset extraction}
+
+
+data_questionnaires <- data[, which(names(data) %in% list_questionnaires)]
+
+sumtable(data_questionnaires)
+```
+
+# 1) Unique Variable Analysis
+
+Ressource: r-ega.net/articles/ega.html
+
+### UVA
+
+```{r message=FALSE, warning=FALSE}
+colive_uva <- UVA(
+  data = data_questionnaires,
+  cut.off = THRESHOLD_UVA,
+  verbose = TRUE, 
+  #key = items# Optional: provide item descriptions
+)
+
+colive_uva # to display the result
+```
+
+The Weighted Topological Overlap (WTO) measures the degree of association of two variables. The higher the WTO, the higher the chances that two nodes in the network will highly correlate with each other and fewly with the rest of the network.
+
+With a threshold of wto\>0.25:
+
+```{r}
+colive_uva$keep_remove
+dataset_symptoms <- colive_uva$reduced_data
+```
+
+# 2) Symptom network Analysis
+
+```{r message=FALSE, warning=FALSE}
+item_names <- c(
+  'bowPb'="Bowel movements problem",
+  'H/A'="Regular headache or migraine",
+  'pain'="Instantaneous pain",
+  'stress'="Instantaneous stress",
+  'fss_1'="My motivation is lower when I am fatigued",
+  'fss_2'="Exercise brings on my fatigue",
+  'fss_3'="I am easily fatigued",
+  'fss_4'="Fatigue interferes with my physical functioning",
+  'fss_5'="Fatigue causes frequent problems for me",
+  'fss_6'="My fatigue prevents sustained physical functioning",
+  'fss_7'="F. inteferes with carrying out duties and responsabilities",
+  'fss_8'="F. is among my three most disabling symptoms",
+  'fss_9'="F. interferes with my work, family, or social life",
+  'who5_1'="I have felt cheerful and in good spirits",
+  'who5_2'="I have felt calm and relaxed",
+  'who5_3'="I have felt active and vigorous",
+  'who5_4'="I woke up feeling fresh and rested",
+  'who5_5'="My daily life has been filled with things that interest me",
+  'vq11_1'="I suffer from my shortness of breath",
+  'vq11_2'="I worry about my respiratory state",
+  'vq11_3'="I feel misunderstood by those around me",
+  'vq11_4'="My respiratory state prevents me from moving as I would like",
+  'vq11_5'="I'm sleepy during the day",
+  'vq11_6'="I feel incapable of carrying out my projects",
+  'vq11_7'="I get tired quickly in the activities of daily living",
+  'vq11_8'="Physically I'm dissatisfied with what I can do",
+  'vq11_9'="My respiratory disease is disrupting my social life",
+  'vq11_10'="I feel sad",
+  'vq11_11'="My respiratory state limits my emotional life",
+  'phq9_1'="Little interest or pleasure in doing things?",
+  'phq9_2'="Feeling down, depressed, or hopeless",
+  'phq9_3'="Trouble falling or staying asleep, or sleeping too much?",
+  'phq9_4'="Feeling tired or having little energy?",
+  'phq9_5'="Poor appetite or overeating?",
+  'phq9_6'="Feeling bad about yourself [...]?",
+  'phq9_7'="Trouble concentrating on things [...] ?",
+  'phq9_8'="Moving or speaking slowly [..]? Or fidgety or restless [...] ?",
+  'phq9_9'=" Thoughts that you would be better off dead [...]?",
+  'age'="Age",
+  'BMI'="Body Mass Index",
+  'Edu.L'="Education Level",
+  'A.days'="Number of days with alcohol consumption",
+  'A.glass'="Number of alcoholic drinks (typical day)?", 
+  'A.heavy'="Number of days heavy drinking",
+  'Cig.'= "Number of cigarest per day"
+)
+```
+
+```{r message=FALSE, warning=FALSE}
+symptom_network <- estimateNetwork(dataset_symptoms,
+                           default = "EBICglasso",
+                           tuning = GAMMA,
+                           lambda.min.ratio = LAMBDA_MIN_RATIO, # similar to EGA
+                           corMethod = CORR_qgraph #spearman
+                           )
+```
+
+## Function to plot symptom network
+
+```{r function to plot symptom network}
+plot_symptom_network <-
+  function(symptom_network,
+           layout,
+           threshold,
+           items_name,
+           groups_name = c(),
+           edge_labels = FALSE,
+           level = "symptom",
+           LAYOUTSCALE=c(1.2, 1),
+           LAYOUTOFFSET=c(0,0)){
+    if (length(groups_name) ==0 && level == "symptom") {
+      groups = as.list(rep(0, length(items_name)))
+      legend_mode = "names"
+    }else if (level == "symptom"){
+      groups=unname(groups_name[colnames(symptom_network$data)])
+      legend_mode = "style1"
+    }
+    else {
+      groups=unname(groups_name[colnames(symptom_network$data)])
+      legend_mode = "groups"
+    }
+    plot(
+      symptom_network,
+      layout = layout,
+      groups= groups,
+      color = color_palette_EGA("polychrome",wc=unique(groups)),
+      #"spring",
+      sampleSize = nrow(symptom_network$data),
+      # sample size, when graph="glasso" or minimum="sig"
+      label.cex = 0.8,
+      # scalar on label size
+      label.color = 'black',
+      # string on label colors
+      label.prop = 0.9,
+      # proportion of the width of the node that the label scales
+      layoutOffset = LAYOUTOFFSET,
+      #offset of the graph with the legend
+
+      # Edges (pp. 33-34)
+      negDashed = F,
+      # should negative edges be dashed?
+      
+      threshold = threshold,
+      #threshold on edges
+      legend = T,#should we plot the legend ?
+      legend.mode = legend_mode,
+      legend.cex = 0.7,
+      layoutScale = LAYOUTSCALE,
+      GLratio = 1.5,
+
+      vsize = 4,
+      vsize2 = 4,
+      
+      edge.labels = edge_labels, 
+      edge.label.margin = 0.0,
+      edge.label.bg = T,
+      edge.label.cex = 0.5,
+      
+      nodeNames = unname(items_name[colnames(symptom_network$data)]),
+      
+    )
+  }
+```
+
+```{r}
+
+layout = averageLayout(symptom_network,
+              symptom_network,
+              layout = "spring") # in order to have the same layout for all the symptom networks
+
+# plot it
+plot_symptom_network(symptom_network,layout,0.05,item_names)
+
+#and save it as pdf
+pdf(file = paste(folder_results,"symptom_network_0.05.pdf",sep=""),
+    width = 20,
+    height = 15)
+plot_symptom_network(symptom_network,layout,0.05,item_names)
+dev.off() 
+
+pdf(file = paste(folder_results,"symptom_network_0.10.pdf",sep=""),
+    width = 20,
+    height = 15)
+plot_symptom_network(symptom_network,layout,0.10,item_names)
+dev.off()
+```
+
+## With covariates
+
+```{r}
+symptom_network_covariates <- estimateNetwork(cbind.data.frame(dataset_symptoms,data[,covariates]),
+                           default = "EBICglasso",
+                           tuning = GAMMA,
+                           lambda.min.ratio = LAMBDA_MIN_RATIO, # similar to EGA
+                           corMethod = CORR_qgraph #spearman
+                           )
+plot_symptom_network(symptom_network_covariates,"spring",0.10,item_names)
+
+pdf(file = paste(folder_results,"symptom_network_covariates_0.10.pdf",sep=""),
+    width = 20,
+    height = 15)
+plot_symptom_network(symptom_network_covariates,"spring",0.10,item_names)
+dev.off() 
+```
+
+**Interpretation**
+
+With a threshold of 0.1, Age, BMI, Edu. level, Alcohol consumption and cigaret consumption do not interact with the other dimensions of the network. The results about relationship between the symptoms are thus supposed as independant from the effect of these covariates.
+
+## Stability of the edges
+
+```{r message=FALSE, warning=FALSE}
+file = paste(folder_boot_res,"bootnet_nonpar.Rdata",sep = "")
+if(file.exists(file)&& FORCE_BOOT==FALSE){
+  load(file)
+}else{
+bootnet_nonpar <- bootnet(symptom_network, 
+                          nBoots = N_BOOTS_CENTRALITY, # number of boot samples
+                          corMethod = CORR_qgraph,
+                         nCores = NCORE)
+save(bootnet_nonpar, file = file)
+
+}
+```
+
+```{r}
+pdf(file = paste(folder_results,"edges_stability_low_level.pdf"),
+    width = 8,
+    height = 5) 
+plot(bootnet_nonpar,
+     labels = FALSE,
+     order = "sample")
+dev.off()
+```
+
+```{r}
+plot(bootnet_nonpar,
+     labels = FALSE,
+     order = "sample")
+```
+
+**Interpretation**
+
+Non parametric bootstrap in order to measure stability of the edges. Each line corresponds to an edges, ordered by value.
+
+## Centrality
+
+### Metrics
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = paste(folder_results,"centrality_by_strength.pdf"),
+    width = 5,
+    height = 8) 
+centralityPlot(symptom_network, include = c("Strength", "Closeness", "Betweenness"), orderBy = "Strength")
+dev.off()
+
+centralityPlot(symptom_network, include = c("Strength", "Closeness", "Betweenness"), orderBy = "Strength")
+```
+
+**how to read it ?**
+
+-   Definition of the metrics: <https://reisrgabriel.com/blog/2021-10-08-centrality/>
+
+    -   centrality = sum of absolute edges' weights
+
+    -   betweenness = how many time the node is the shortest way between two other nodes
+
+    -   closeness = 1/ (sum (1/absolute weights))
+
+    Interpretation: <https://www.apa.org/pubs/journals/features/abn-abn0000446.pdf>
+
+**Interpretation**
+
+VQ11-7, VQ11-10 and PHQ9-4 are the three most central symptoms in the whole network.
+
+### Stability of the centrality metrics
+
+```{r}
+file = paste(folder_boot_res,"bootnet_case_dropping_all.Rdata",sep = "")
+if(file.exists(file)&& FORCE_BOOT==FALSE){
+  load(file)
+}else{
+bootnet_case_dropping_all <- bootnet(symptom_network, 
+                                 nBoots = N_BOOTS_CENTRALITY,
+                                 type = "case",
+                                 nCores = NCORE,
+                                 tuning = GAMMA,
+                                 lambda.min.ratio = LAMBDA_MIN_RATIO, # similar to EGA
+                                 corMethod = CORR_qgraph,
+                                 statistics = c('strength',
+                                                'closeness',
+                                                'betweenness'))
+save(bootnet_case_dropping_all,file=file)
+} 
+```
+
+```{r}
+pdf(file = paste(folder_results,"stability_centrality_metrics.pdf"),
+    width = 6,
+    height = 4) 
+plot(bootnet_case_dropping_all, 'all')
+dev.off()
+
+plot(bootnet_case_dropping_all, 'all')
+```
+
+**Interpretation**
+
+This graph represent the correlation between the original centrality metrics and the ones computer on a boostrap removing x% of the original sample (x on the x-axis).
+
+```{r}
+corStability(bootnet_case_dropping_all)
+```
+
+**Interpretation**
+
+Epskamp et al. (2018) suggest that "the CS-coefficient should not be below 0.25, and preferably above 0.5."
+
+Here, we can interpret without risks the strength and the closeness, but we should be more cautious with betweeness.
+
+# 3) EGA: From symptoms to syndromes
+
+## Low level clustering
+
+```{r message=FALSE, warning=FALSE}
+colive_ega <- EGA(data = dataset_symptoms,
+                         model = c("glasso"),
+                         algorithm = "Louvain", #forcing Louvain because it is the only validated for hierarchical network
+                         lamdba.min.ratio = LAMBDA_MIN_RATIO,
+                         gamma = GAMMA,
+                         corr= CORR_EGA,
+                         order = "Lower" # do not forget this parameter indicating that it is the lower level in hierarchy (default = higher)
+                         )
+summary(colive_ega)
+```
+
+**Interpretation**
+
+Using a Louvain algorithm to minimize the TEFI, we obtained 7 clusters of symptoms (i.e. 7 syndromes).
+
+The next step is to name these syndromes, based on the replication of each item into the cluster and the loadings
+
+## Stability of low level graph
+
+```{r message=FALSE, warning=FALSE}
+file = paste(folder_boot_res,"colive_boot.Rdata",sep = "")
+if(file.exists(file)&& FORCE_BOOT==FALSE){
+  load(file)
+}else{
+colive_boot <- bootEGA(
+  data = dataset_symptoms,
+  model = "glasso",
+  lamdba.min.ratio = LAMBDA_MIN_RATIO,
+  gamma = GAMMA,
+  corr= CORR_EGA,
+  algorithm = "Louvain",
+  seed = 42, # set seed for reproducibility
+  iter = N_BOOT_EGA,
+  n_core = NCORE,
+  order = "Lower",
+  plot = FALSE
+  )
+save(colive_boot,file = file)
+}
+```
+
+```{r}
+stability <- dimensionStability(colive_boot)
+
+pdf(file = paste(folder_results,"stability_EGA_lowlevel.pdf"),
+    width = 5,
+    height = 8)
+dimensionStability(colive_boot)
+dev.off()
+```
+
+**Interpretation**
+
+Each number corresponds to the replication rate of the item to the assigned cluster. When interpretating the clusters of symptoms (i.e. the syndromes), we have taken into account these replication to weight the implication of the items in the clusters.
+
+## Plotting symptom network with colors !
+
+### Name of the dimensions
+
+```{r}
+list_dimensions = c("1. Depressive syndrome",
+                    "2. Fatigue Disability",
+                    "3. Fatigue-related physical impairment",
+                    "4. Fatigue Handicap",
+                    "5. Well-being",
+                    "6. Cognition and psychosomatic",
+                    "7. Respiratory state handicap")
+dico_groups <- c()
+for (i in 0:length(colive_ega$dim.variables$items)){
+  dico_groups[colive_ega$dim.variables$items[i]] = list_dimensions[strtoi(colive_ega$dim$dimension[i])]
+}
+
+```
+
+### Plotting symptom network with clusters
+
+```{r}
+# plot it
+plot_symptom_network(symptom_network,layout,0.10,item_names, dico_groups,edge_label = TRUE)
+
+#and save it as pdf
+pdf(file = paste(folder_results,"symptom_network_clusters_0.05.pdf",sep=""),
+    width = 28,
+    height = 15)
+plot_symptom_network(symptom_network,layout,0.05,item_names, dico_groups)
+dev.off() 
+
+pdf(file = paste(folder_results,"symptom_network_clusters_0.10.pdf",sep=""),
+    width = 28,
+    height = 15)
+plot_symptom_network(symptom_network,layout,0.10,item_names, dico_groups,edge_label = TRUE)
+dev.off()
+```
+
+## Hierarchical estimation
+
+```{r message=FALSE, warning=FALSE}
+colive_ega_hier_glasso <- hierEGA(
+  data = dataset_symptoms,
+  scores = "network", #factor or network
+  model = "glasso",
+  corr=CORR_EGA,
+  lower.algorithm="Louvain",
+  lamdba.min.ratio = LAMBDA_MIN_RATIO,
+  gamma = GAMMA,
+  plot.EGA = FALSE, # No plot for CRAN checks,
+  seed = 42# or sepatate
+  )
+summary(colive_ega_hier_glasso)
+
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = "./figures_baseline/hierEGA_multilevel.pdf",
+    width = 8,
+    height = 6) 
+plot(colive_ega_hier_glasso, plot.type = "multilevel")
+dev.off()
+plot(colive_ega_hier_glasso, plot.type = "multilevel")
+
+```
+
+**Interpretation**
+
+Now that we have computed syndromes from symptoms, we can run a network analysis on them !
+
+```{r}
+plot(colive_ega_hier_glasso, plot.type = "separate", color.match = TRUE)
+
+```
+
+```{r}
+# saving the loadings in a file
+write.table(colive_ega_hier_glasso$parameters$lower_loadings, file = paste(folder_results,"loadings_EGA.txt"), sep = ",", quote = FALSE, row.names = T)
+```
+
+## (Nice) plot of loadings
+
+```{r}
+library(RColorBrewer)
+coul <- colorRampPalette(brewer.pal(9, "Blues"))(25)
+
+loadings = abs(colive_ega_hier_glasso$parameters$lower_loadings)
+loadings <- diag(1/rowSums(loadings)) %*% loadings 
+
+loadings <- t(loadings)
+colnames(loadings) <-  rownames(colive_ega_hier_glasso$parameters$lower_loadings)
+
+corrplot(t(loadings),
+         tl.col = "black", tl.srt = 90,
+         cl.pos = 'n'
+         )
+
+pdf(file = paste(folder_results,"hier_loadings.pdf"),
+    width = 2.5,
+    height = 8) 
+corrplot(t(loadings),
+         tl.col = "black", tl.srt = 90,
+         cl.pos = 'n'
+         )
+dev.off()
+
+```
+
+------------------------------------------------------------------------
+
+# 4) Syndrome network
+
+### Computing the syndrome dataset (scores to the Louvain clustering algorithm)
+
+```{r Computing syndromes dataset}
+
+dataset_syndrome <- colive_ega_hier_glasso$parameters$lower_scores
+
+colnames(dataset_syndrome)[1] = "1"
+colnames(dataset_syndrome)[2] = "2"
+colnames(dataset_syndrome)[3] = "3"
+colnames(dataset_syndrome)[4] = "4"
+colnames(dataset_syndrome)[5] = "5"
+colnames(dataset_syndrome)[6] = "6"
+colnames(dataset_syndrome)[7] = "7"
+
+dataset_all_syndrome <- cbind.data.frame(dataset_syndrome,data[which(names(data) %in% stratif)])
+```
+
+```{r}
+dico_syndrome = c()
+for (i in 1:length(list_dimensions)){
+  dico_syndrome[as.character(i)] = list_dimensions[i]
+}
+
+for (cov in covariates){
+  dico_syndrome[cov] = "covariate"
+}
+
+```
+
+### Syndrom network
+
+```{r message=FALSE, warning=FALSE}
+syndrome_network <- estimateNetwork(dataset_syndrome,
+                            default = "EBICglasso",
+                            tuning = GAMMAHL,
+                            lambda.min.ratio = LAMBDA_MIN_RATIO, # similar to EGA
+                            corMethod = CORR_qgraph #spearman
+                           )
+```
+
+```{r}
+layout = averageLayout(syndrome_network,
+              syndrome_network,
+              layout = "circular") # in order to have the same layout for all the symptom networks
+
+plot_symptom_network(syndrome_network,layout,0.05,dico_syndrome, dico_syndrome,edge_labels = TRUE, level = "syndrome",LAYOUTSCALE=c(1,1))
+```
+
+```{r}
+
+#and save it as pdf
+pdf(file = paste(folder_results,"syndrome_network_0.05.pdf",sep=""),
+    width = 10,
+    height = 6)
+plot_symptom_network(syndrome_network,layout,0.05,dico_syndrome, dico_syndrome,edge_labels = TRUE, level = "syndrome",LAYOUTSCALE=c(1,1), LAYOUTOFFSET = c(-0.1,0))
+dev.off() 
+
+pdf(file = paste(folder_results,"syndrome_network_0.10.pdf",sep=""),
+    width = 10,
+    height = 6)
+plot_symptom_network(syndrome_network,layout,0.10,dico_syndrome, dico_syndrome,edge_labels = TRUE, level = "syndrome",LAYOUTSCALE=c(1,1), LAYOUTOFFSET = c(-0.1,0))
+dev.off()
+```
+
+### With covariates
+
+```{r}
+syndrome_network_covariates <- estimateNetwork(cbind.data.frame(dataset_syndrome,data[,covariates]),
+                           default = "EBICglasso",
+                           tuning = GAMMA,
+                           lambda.min.ratio = LAMBDA_MIN_RATIO, # similar to EGA
+                           corMethod = CORR_qgraph #spearman
+                           )
+
+plot(
+      syndrome_network_covariates,
+      layout = "spring",
+      color = color_palette_EGA("polychrome",wc=unname(dico_syndrome[colnames(syndrome_network_covariates$data)])),
+      groups = unname(dico_syndrome[colnames(syndrome_network_covariates$data)]),
+      sampleSize = nrow(syndrome_network_covariates$data),
+      # sample size, when graph="glasso" or minimum="sig"
+      label.cex = 0.8,
+      # scalar on label size
+      label.color = 'black',
+      # string on label colors
+      label.prop = 0.9,
+      # proportion of the width of the node that the label scales
+      layoutOffset = c(0,0),
+      #offset of the graph with the legend
+      
+      threshold = 0.10,
+      #threshold on edges
+      legend = T,#should we plot the legend ?
+      legend.mode = "groups",
+      legend.cex = 0.7,
+      layoutScale = c(1,1),
+      GLratio = 1.5,
+
+      vsize = 4,
+      vsize2 = 4,
+      
+      edge.labels = T, 
+      edge.label.margin = 0.0,
+      edge.label.bg = T,
+      edge.label.cex = 0.5,
+      
+)
+```
+
+```{r}
+pdf(file = paste(folder_results,"syndrome_network_covariates_0.10.pdf",sep=""),
+    width = 20,
+    height = 15)
+plot_symptom_network(symptom_network_covariates,"spring",0.10,item_names)
+dev.off()
+```
+
+**Interpretation**
+
+With a threshold of 0.1, Age, BMI, Edu. level, Alcohol consumption and cigaret consumption do not interact with the other dimensions of the network. The results about relationship between the syndromes are thus supposed to be independent from the effect of these covariates.
+
+## Stability of the edges
+
+```{r message=FALSE, warning=FALSE}
+file = paste(folder_boot_res,"bootnet_nonpar_syndrome.Rdata",sep = "")
+if(file.exists(file)&& FORCE_BOOT==FALSE){
+  load(file)
+}else{
+bootnet_nonpar_syndrome <- bootnet(syndrome_network, 
+                          nBoots = N_BOOTS_CENTRALITY, # number of boot samples
+                          corMethod = CORR_qgraph,
+                         nCores = NCORE)
+save(bootnet_nonpar_syndrome, file = file)
+
+}
+```
+
+```{r}
+pdf(file = paste(folder_results,"edges_stability_high_level.pdf"),
+    width = 8,
+    height = 5) 
+plot(bootnet_nonpar_syndrome,
+     labels = FALSE,
+     order = "sample")
+dev.off()
+```
+
+```{r}
+plot(bootnet_nonpar_syndrome,
+     labels = FALSE,
+     order = "sample")
+```
+
+## Syndromes centrality
+
+### Metrics
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = paste(folder_results,"centrality_by_strength.pdf"),
+    width = 5,
+    height = 8) 
+centralityPlot(syndrome_network, include = c("Strength", "Closeness", "Betweenness"), orderBy = "Strength")
+dev.off()
+
+centralityPlot(syndrome_network, include = c("Strength", "Closeness", "Betweenness"), orderBy = "Strength")
+```
+
+**how to read it ?**
+
+-   Definition of the metrics: <https://reisrgabriel.com/blog/2021-10-08-centrality/>
+
+    -   centrality = sum of absolute edges' weights
+
+    -   betweenness = how many time the node is the shortest way between two other nodes
+
+    -   closeness = 1/ (sum (1/absolute weights))
+
+    Interpretation: <https://www.apa.org/pubs/journals/features/abn-abn0000446.pdf>
+
+**Interpretation**
+
+Fatigue diasability (2), Fatigue handicap (4) and Well-being (5) are the three most central symptoms in the syndrome network.
+
+### Stability of the centrality metrics
+
+```{r}
+file = paste(folder_boot_res,"bootnet_case_dropping_all_syndrome.Rdata",sep = "")
+if(file.exists(file)&& FORCE_BOOT==FALSE){
+  load(file)
+}else{
+bootnet_case_dropping_all_syndrome <- bootnet(syndrome_network, 
+                                 nBoots = N_BOOTS_CENTRALITY,
+                                 type = "case",
+                                 nCores = NCORE,
+                                 tuning = GAMMA,
+                                 lambda.min.ratio = LAMBDA_MIN_RATIO, # similar to EGA
+                                 corMethod = CORR_qgraph,
+                                 statistics = c('strength',
+                                                'closeness',
+                                                'betweenness'))
+save(bootnet_case_dropping_all_syndrome,file=file)
+} 
+```
+
+```{r}
+pdf(file = paste(folder_results,"stability_centrality_metrics_syndrome.pdf"),
+    width = 6,
+    height = 4) 
+plot(bootnet_case_dropping_all_syndrome, 'all')
+dev.off()
+
+plot(bootnet_case_dropping_all_syndrome, 'all')
+```
+
+**Interpretation**
+
+This graph represent the correlation between the original centrality metrics and the ones computer on a boostrap removing x% of the original sample (x on the x-axis).
+
+```{r}
+corStability(bootnet_case_dropping_all_syndrome)
+```
+
+**Interpretation**
+
+Epskamp et al. (2018) suggest that "the CS-coefficient should not be below 0.25, and preferably above 0.5."
+
+Here, we can interpret without risks the strength and the closeness, but we can not intepret betweeness, which is too unstable.
